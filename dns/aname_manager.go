@@ -2,40 +2,22 @@ package dns
 
 import (
 	"context"
+	"database/sql"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/miekg/dns"
 	"dsdns/internal/logger"
 	"dsdns/internal/models"
 )
 
-type DBQuerier interface {
-	LookupRecords(domain string) ([]*models.Record, error)
-	// 需要额外方法用于更新记录，这里我们直接在 DoHServer 中使用 db 执行 SQL
-	// 因此我们需要暴露 db 的 Exec 方法，或者通过接口扩展
-	// 为简单起见，我们在 DoHServer 中持有 *sql.DB，但这里我们传入 DB 引用
-}
-
-// 实际实现中，我们会在 main 中初始化一个 *sql.DB 并传给 DoHServer
-// 此处简化：在 DoHServer 中包含 db *sql.DB，但为了不破坏接口，我们定义一个扩展接口
-type DBExecutor interface {
-	Exec(query string, args ...interface{}) (sql.Result, error)
-	Query(query string, args ...interface{}) (*sql.Rows, error)
-}
-
-// DoHServer 中增加 dbExecutor 字段
-// 修改 DoHServer 结构：加入 db DBExecutor
-
 type ANAMEManager struct {
-	db     DBExecutor
+	db     *sql.DB
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
 
-func NewANAMEManager(db DBExecutor) *ANAMEManager {
+func NewANAMEManager(db *sql.DB) *ANAMEManager {
 	return &ANAMEManager{db: db, stopCh: make(chan struct{})}
 }
 
@@ -51,7 +33,7 @@ func (m *ANAMEManager) Stop() {
 
 func (m *ANAMEManager) loop(ctx context.Context) {
 	defer m.wg.Done()
-	ticker := time.NewTicker(60 * time.Second) // 每60秒检查一次
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -66,7 +48,6 @@ func (m *ANAMEManager) loop(ctx context.Context) {
 }
 
 func (m *ANAMEManager) syncAll() {
-	// 查询所有 ANAME 记录
 	rows, err := m.db.Query(`
 		SELECT r.id, r.domain_id, r.rule_type, r.continent, r.isp, r.province, r.value, r.ttl, d.domain
 		FROM records r JOIN domains d ON d.id = r.domain_id
@@ -79,8 +60,8 @@ func (m *ANAMEManager) syncAll() {
 	defer rows.Close()
 
 	type anameRec struct {
-		rec      *models.Record
-		domain   string // 所属域名
+		rec    *models.Record
+		domain string
 	}
 	var anames []anameRec
 	for rows.Next() {
@@ -101,21 +82,16 @@ func (m *ANAMEManager) syncAll() {
 
 func (m *ANAMEManager) syncOne(rec *models.Record, domain string) {
 	target := rec.Value
-	// 解析目标域名，获取 A 和 AAAA 记录
 	aRecords, aaaaRecords := resolveTarget(target)
 
-	// 更新数据库：删除旧的 generated=1 记录，插入新记录（或更新）
-	// 先删除该 domain_id 下、rule_type、continent、isp、province 相同的 generated=1 的记录
-	// 然后插入新的
-	// 使用事务
-	tx, err := m.db.(*sql.DB).Begin() // 暂时类型断言，实际应使用接口
+	tx, err := m.db.Begin()
 	if err != nil {
 		logger.Error("begin tx error", "error", err)
 		return
 	}
 	defer tx.Rollback()
 
-	// 删除旧自动记录
+	// 删除旧的自动记录（同一规则下的 generated=1）
 	_, err = tx.Exec(`
 		DELETE FROM records
 		WHERE domain_id = ? AND rule_type = ? AND continent = ? AND isp = ? AND province = ? AND generated = 1
@@ -154,7 +130,6 @@ func (m *ANAMEManager) syncOne(rec *models.Record, domain string) {
 }
 
 func resolveTarget(target string) (a []string, aaaa []string) {
-	// 使用 net.LookupIP
 	ips, err := net.LookupIP(target)
 	if err != nil {
 		logger.Warn("resolve target failed", "target", target, "error", err)
