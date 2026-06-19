@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+<title>DSDNS 登录 · 智能解析管理</title>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: linear-gradient(145deg, #eef2ff 0%, #d9e2ef 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+
+  .login-card {
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(2px);
+    border-radius: 2rem;
+    box-shadow: 0 25px 45px -12px rgba(0, 0, 0, 0.25), 0 2px 6px rgba(0,0,0,0.02);
+    width: 100%;
+    max-width: 440px;
+    padding: 2rem 1.8rem;
+    transition: all 0.2s;
+  }
+
+  .logo {
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+  .logo h1 {
+    font-size: 2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #1e3a8a, #3b82f6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.5px;
+  }
+  .logo p {
+    color: #475569;
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+  }
+
+  .form-group {
+    margin-bottom: 1.25rem;
+  }
+  label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #1e293b;
+    margin-bottom: 0.3rem;
+  }
+  input {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 1.2rem;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+    outline: none;
+  }
+  input:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
+    background: white;
+  }
+  button {
+    width: 100%;
+    padding: 0.75rem;
+    background: #2563eb;
+    border: none;
+    border-radius: 2rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: white;
+    cursor: pointer;
+    transition: 0.2s;
+    margin-top: 0.5rem;
+  }
+  button:hover {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(37,99,235,0.3);
+  }
+  .secondary-btn {
+    background: #f1f5f9;
+    color: #1e293b;
+    box-shadow: none;
+  }
+  .secondary-btn:hover {
+    background: #e2e8f0;
+    transform: none;
+    box-shadow: none;
+  }
+  .switch-link {
+    text-align: center;
+    margin-top: 1.25rem;
+    font-size: 0.8rem;
+    color: #475569;
+  }
+  .switch-link a {
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .switch-link a:hover {
+    text-decoration: underline;
+  }
+  .error-msg {
+    background: #fee2e2;
+    color: #b91c1c;
+    font-size: 0.75rem;
+    padding: 0.5rem 0.8rem;
+    border-radius: 1rem;
+    margin-top: 0.5rem;
+    text-align: center;
+  }
+  .info-tip {
+    background: #eef2ff;
+    color: #1e40af;
+    font-size: 0.7rem;
+    padding: 0.4rem;
+    border-radius: 1rem;
+    text-align: center;
+    margin-top: 1rem;
+  }
+  hr {
+    margin: 1rem 0;
+    border: 0;
+    height: 1px;
+    background: #e2e8f0;
+  }
+</style>
+</head>
+<body>
+<div class="login-card" id="app">
+  <div class="logo">
+    <h1>🌐 DSDNS</h1>
+    <p>智能地理 DNS 管理平台</p>
+  </div>
+
+  <!-- 登录模块 -->
+  <div id="login-box">
+    <div class="form-group">
+      <label>用户名</label>
+      <input type="text" id="username" placeholder="请输入用户名" autocomplete="username">
+    </div>
+    <div class="form-group">
+      <label>密码</label>
+      <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password">
+    </div>
+    <button id="login-btn">登录 →</button>
+    <div id="error-msg" class="error-msg" style="display: none;"></div>
+    <div class="switch-link" id="reg-hint" style="display: none;">
+      还没有管理员？ <a id="show-register">注册首个管理员</a>
+    </div>
+  </div>
+
+  <!-- 注册模块（仅当系统无管理员时显示或手动切换） -->
+  <div id="register-box" style="display: none;">
+    <div class="form-group">
+      <label>管理员用户名</label>
+      <input type="text" id="reg-username" placeholder="例如: admin" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label>密码</label>
+      <input type="password" id="reg-password" placeholder="至少6位" autocomplete="new-password">
+    </div>
+    <button id="register-btn">注册管理员</button>
+    <div id="reg-error" class="error-msg" style="display: none;"></div>
+    <div class="switch-link">
+      <a id="show-login">← 返回登录</a>
+    </div>
+  </div>
+  <div class="info-tip" id="status-note">🔍 检测系统状态...</div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script>
+  (async function() {
+    // 检查系统是否已有管理员
+    let hasAdmin = false;
+    try {
+      const status = await api('/status');
+      hasAdmin = !!status.has_admin;
+    } catch(e) {
+      console.warn('status 接口异常', e);
+    }
+
+    const loginBox = document.getElementById('login-box');
+    const registerBox = document.getElementById('register-box');
+    const regHint = document.getElementById('reg-hint');
+    const statusNote = document.getElementById('status-note');
+
+    if (!hasAdmin) {
+      // 无管理员 → 显示注册框，隐藏登录框
+      loginBox.style.display = 'none';
+      registerBox.style.display = 'block';
+      regHint.style.display = 'none';
+      statusNote.innerHTML = '✨ 系统尚未初始化，请注册第一个管理员账户';
+    } else {
+      loginBox.style.display = 'block';
+      registerBox.style.display = 'none';
+      regHint.style.display = 'block';
+      statusNote.innerHTML = '✅ 已有管理员，请登录';
+    }
+
+    // 切换事件
+    const showRegister = document.getElementById('show-register');
+    const showLogin = document.getElementById('show-login');
+    if (showRegister) {
+      showRegister.addEventListener('click', (e) => {
+        e.preventDefault();
+        loginBox.style.display = 'none';
+        registerBox.style.display = 'block';
+        statusNote.innerHTML = '📝 注册新管理员账户';
+      });
+    }
+    if (showLogin) {
+      showLogin.addEventListener('click', (e) => {
+        e.preventDefault();
+        registerBox.style.display = 'none';
+        loginBox.style.display = 'block';
+        statusNote.innerHTML = hasAdmin ? '✅ 已有管理员，请登录' : '⚠️ 请先注册管理员';
+      });
+    }
+
+    // 登录逻辑
+    const loginBtn = document.getElementById('login-btn');
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const errorMsgDiv = document.getElementById('error-msg');
+
+    loginBtn.addEventListener('click', async () => {
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      if (!username || !password) {
+        errorMsgDiv.style.display = 'block';
+        errorMsgDiv.textContent = '❌ 用户名和密码不能为空';
+        return;
+      }
+      errorMsgDiv.style.display = 'none';
+      try {
+        const data = await api('/login', {
+          method: 'POST',
+          body: JSON.stringify({ username, password })
+        });
+        localStorage.setItem('token', data.token);
+        // 跳转到管理主页 (index.html 在同一级目录)
+        window.location.href = '/static/index.html';
+      } catch(err) {
+        errorMsgDiv.style.display = 'block';
+        errorMsgDiv.textContent = err.message || '登录失败，请检查凭据';
+      }
+    });
+
+    // 注册逻辑
+    const regBtn = document.getElementById('register-btn');
+    const regUsername = document.getElementById('reg-username');
+    const regPassword = document.getElementById('reg-password');
+    const regErrorDiv = document.getElementById('reg-error');
+
+    regBtn.addEventListener('click', async () => {
+      const username = regUsername.value.trim();
+      const password = regPassword.value;
+      if (!username || !password) {
+        regErrorDiv.style.display = 'block';
+        regErrorDiv.textContent = '❌ 用户名和密码不能为空';
+        return;
+      }
+      if (password.length < 4) {
+        regErrorDiv.style.display = 'block';
+        regErrorDiv.textContent = '⚠️ 密码长度至少4位';
+        return;
+      }
+      regErrorDiv.style.display = 'none';
+      try {
+        await api('/register', {
+          method: 'POST',
+          body: JSON.stringify({ username, password })
+        });
+        alert('🎉 管理员注册成功！请登录');
+        // 重新加载页面，切换到登录界面
+        window.location.reload();
+      } catch(err) {
+        regErrorDiv.style.display = 'block';
+        regErrorDiv.textContent = err.message || '注册失败，可能用户名已存在';
+      }
+    });
+
+    // 回车快捷登录
+    const handleEnter = (e) => {
+      if (e.key === 'Enter') {
+        if (loginBox.style.display !== 'none') loginBtn.click();
+        else if (registerBox.style.display !== 'none') regBtn.click();
+      }
+    };
+    document.addEventListener('keypress', handleEnter);
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSDNS 管理面板</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #f1f5f9; color: #0f172a; }
+  .navbar { background: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; }
+  .logo { font-size: 1.5rem; font-weight: 700; background: linear-gradient(135deg, #1e3a8a, #3b82f6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .container { max-width: 1280px; margin: 2rem auto; padding: 0 1.5rem; }
+  .card { background: white; border-radius: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; margin-bottom: 1.5rem; }
+  .card-header { padding: 1rem 1.5rem; border-bottom: 1px solid #eef2ff; display: flex; justify-content: space-between; align-items: center; }
+  .domain-item { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid #f0f2f5; }
+  .domain-name { font-weight: 600; }
+  .btn { padding: 0.4rem 1rem; border-radius: 2rem; border: none; cursor: pointer; font-weight: 500; transition: 0.2s; }
+  .btn-primary { background: #2563eb; color: white; }
+  .btn-secondary { background: #e2e8f0; color: #1e293b; }
+  .btn-danger { background: #ef4444; color: white; }
+  .btn-sm { padding: 0.2rem 0.8rem; font-size: 0.8rem; }
+  .action-group { display: flex; gap: 0.5rem; }
+  .rule-row { background: #f9fafb; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+  .rule-field { flex: 1; min-width: 120px; }
+  select, input { padding: 0.5rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; background: white; width: 100%; }
+  .delete-rule { background: #fee2e2; color: #dc2626; border: none; padding: 0.5rem 1rem; border-radius: 0.5rem; cursor: pointer; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; visibility: hidden; opacity: 0; transition: 0.2s; z-index: 1000; }
+  .modal-overlay.active { visibility: visible; opacity: 1; }
+  .modal-container { background: white; border-radius: 1rem; width: 90%; max-width: 1000px; max-height: 85vh; display: flex; flex-direction: column; }
+  .modal-header { padding: 1rem 1.5rem; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; }
+  .modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; }
+  .modal-footer { padding: 1rem 1.5rem; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 1rem; }
+  .empty-state { text-align: center; padding: 2rem; color: #64748b; }
+</style>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="logo">🌐 DSDNS 智能解析</div>
+  <div><span id="user-info"></span> <button id="logout-btn" class="btn btn-danger btn-sm">退出</button></div>
+</nav>
+
+<div class="container">
+  <div class="card">
+    <div class="card-header">
+      <h2>我的域名</h2>
+      <button id="add-domain-btn" class="btn btn-primary">+ 添加域名</button>
+    </div>
+    <div id="domain-list">加载中...</div>
+  </div>
+</div>
+
+<!-- 规则编辑器模态框 -->
+<div id="editor-modal" class="modal-overlay">
+  <div class="modal-container">
+    <div class="modal-header">
+      <h3>编辑 DNS 记录</h3>
+      <button class="close-modal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="margin-bottom: 1rem;">
+        <label>域名 (可修改)</label>
+        <input type="text" id="domain-name-input" placeholder="example.com">
+        <button id="rename-domain-btn" class="btn btn-secondary btn-sm" style="margin-top: 0.5rem;">修改域名</button>
+      </div>
+      <hr style="margin: 1rem 0;">
+      <div id="rules-container"></div>
+      <button id="add-rule-btn" class="btn btn-secondary">+ 添加规则</button>
+    </div>
+    <div class="modal-footer">
+      <button id="cancel-editor" class="btn btn-secondary">取消</button>
+      <button id="save-editor" class="btn btn-primary">保存全部记录</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script>
+  // ----------------------------- 常量定义 ---------------------------------
+  const CONTINENTS = {
+    'asia': '亚洲',
+    'europe': '欧洲',
+    'africa': '非洲',
+    'north_america': '北美',
+    'south_america': '南美',
+    'oceania': '大洋洲'
+  };
+  const ISPS = {
+    'mobile': '移动',
+    'unicom': '联通',
+    'telecom': '电信',
+    'broadcast': '广电',
+    'education': '教育网',
+    'other': '其他'
+  };
+  const TYPES = ['A', 'AAAA', 'CNAME'];
+  const TTLS = [60, 300, 600, 1200, 3600];
+
+  let currentDomain = null; // { id, domain }
+  let rules = []; // 当前编辑的规则数组
+
+  // ----------------------------- 辅助函数 ---------------------------------
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+      if (m === '&') return '&amp;';
+      if (m === '<') return '&lt;';
+      if (m === '>') return '&gt;';
+      return m;
+    });
+  }
+
+  // 渲染规则列表（完全基于 rules 数组）
+  function renderRules() {
+    const container = document.getElementById('rules-container');
+    if (!rules.length) {
+      container.innerHTML = '<div class="empty-state">暂无规则，点击下方按钮添加</div>';
+      return;
+    }
+    let html = '';
+    rules.forEach((rule, idx) => {
+      html += `<div class="rule-row" data-idx="${idx}">`;
+
+      // 规则类型选择器
+      html += `<div class="rule-field"><select class="rule-type" data-idx="${idx}">
+        <option value="default" ${rule.rule_type === 'default' ? 'selected' : ''}>默认 (兜底)</option>
+        <option value="china_other" ${rule.rule_type === 'china_other' ? 'selected' : ''}>中国其他 (港澳台/无法识别)</option>
+        <option value="continent" ${rule.rule_type === 'continent' ? 'selected' : ''}>大洲</option>
+        <option value="china" ${rule.rule_type === 'china' ? 'selected' : ''}>中国大陆</option>
+      </select></div>`;
+
+      // 大洲选择器 (仅当 rule_type='continent')
+      if (rule.rule_type === 'continent') {
+        html += `<div class="rule-field"><select class="continent" data-idx="${idx}">
+          ${Object.entries(CONTINENTS).map(([k,v]) => `<option value="${k}" ${rule.continent === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select></div>`;
+      }
+
+      // 中国大陆子选项
+      if (rule.rule_type === 'china') {
+        html += `<div class="rule-field"><select class="china-isp" data-idx="${idx}">
+          <option value="">(任意运营商)</option>
+          ${Object.entries(ISPS).map(([k,v]) => `<option value="${k}" ${rule.isp === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select></div>`;
+        html += `<div class="rule-field"><input type="text" class="china-province" data-idx="${idx}" placeholder="省/市 (可留空)" value="${escapeHtml(rule.province)}"></div>`;
+      }
+
+      // 记录类型、值、TTL
+      html += `<div class="rule-field"><select class="record-type" data-idx="${idx}">
+        ${TYPES.map(t => `<option value="${t}" ${rule.type === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select></div>`;
+      html += `<div class="rule-field"><input type="text" class="record-value" data-idx="${idx}" placeholder="记录值" value="${escapeHtml(rule.value)}"></div>`;
+      html += `<div class="rule-field"><select class="record-ttl" data-idx="${idx}">
+        ${TTLS.map(ttl => `<option value="${ttl}" ${rule.ttl === ttl ? 'selected' : ''}>${ttl}秒</option>`).join('')}
+      </select></div>`;
+      html += `<button class="delete-rule" data-idx="${idx}">删除</button>`;
+      html += `</div>`;
+    });
+    container.innerHTML = html;
+  }
+
+  // 从 DOM 中收集当前所有规则的最新数据（同步到 rules 数组）
+  function syncRulesFromDOM() {
+    const rows = document.querySelectorAll('#rules-container .rule-row');
+    const newRules = [];
+    for (let row of rows) {
+      const idxAttr = row.getAttribute('data-idx');
+      if (idxAttr === null) continue;
+      const idx = parseInt(idxAttr);
+      // 获取当前规则对象（原备份）
+      const oldRule = rules[idx] || {};
+      // 读取各字段值
+      const ruleTypeSelect = row.querySelector('.rule-type');
+      const ruleType = ruleTypeSelect ? ruleTypeSelect.value : oldRule.rule_type;
+      let continent = '';
+      let isp = '';
+      let province = '';
+      if (ruleType === 'continent') {
+        const continentSelect = row.querySelector('.continent');
+        continent = continentSelect ? continentSelect.value : oldRule.continent || '';
+      } else if (ruleType === 'china') {
+        const ispSelect = row.querySelector('.china-isp');
+        isp = ispSelect ? ispSelect.value : oldRule.isp || '';
+        const provinceInput = row.querySelector('.china-province');
+        province = provinceInput ? provinceInput.value : oldRule.province || '';
+      }
+      const typeSelect = row.querySelector('.record-type');
+      const type = typeSelect ? typeSelect.value : oldRule.type;
+      const valueInput = row.querySelector('.record-value');
+      const value = valueInput ? valueInput.value : oldRule.value;
+      const ttlSelect = row.querySelector('.record-ttl');
+      const ttl = ttlSelect ? parseInt(ttlSelect.value) : oldRule.ttl;
+      newRules.push({
+        rule_type: ruleType,
+        continent: continent,
+        isp: isp,
+        province: province,
+        type: type,
+        value: value,
+        ttl: ttl
+      });
+    }
+    rules = newRules;
+  }
+
+  // 保存前校验
+  function validateRules() {
+    if (!rules.some(r => r.rule_type === 'default')) {
+      alert('必须保留一条类型为“默认”的规则');
+      return false;
+    }
+    for (let i = 0; i < rules.length; i++) {
+      const r = rules[i];
+      if (!r.type || !r.value || !r.ttl) {
+        alert(`第${i+1}条规则缺少记录类型/值/TTL`);
+        return false;
+      }
+      if (r.rule_type === 'continent') {
+        if (!r.continent) {
+          alert('大洲规则必须选择大洲');
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  // 保存记录到后端
+  async function saveRecords() {
+    // 先同步 DOM 最新值到 rules 数组
+    syncRulesFromDOM();
+    if (!validateRules()) return;
+    try {
+      await api(`/domains/${currentDomain.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(rules)
+      });
+      alert('保存成功');
+      closeEditor();
+      loadDomains();
+    } catch(e) {
+      alert('保存失败: ' + e.message);
+    }
+  }
+
+  // 修改域名
+  async function renameDomain() {
+    const newDomain = document.getElementById('domain-name-input').value.trim();
+    if (!newDomain) return alert('域名不能为空');
+    if (newDomain === currentDomain.domain) return;
+    try {
+      await api(`/domains/${currentDomain.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ domain: newDomain })
+      });
+      currentDomain.domain = newDomain;
+      alert('域名修改成功，记录已迁移');
+      loadDomains();
+    } catch(e) {
+      alert('修改失败: ' + e.message);
+    }
+  }
+
+  // 打开编辑器
+  async function openEditor(domainId, domainName) {
+    currentDomain = { id: domainId, domain: domainName };
+    document.getElementById('domain-name-input').value = domainName;
+    try {
+      const records = await api(`/domains/${domainId}`);
+      // 后端返回 [] 而不是 null，确保可以迭代
+      rules = records.map(r => ({
+        rule_type: r.rule_type,
+        continent: r.continent || '',
+        isp: r.isp || '',
+        province: r.province || '',
+        type: r.type,
+        value: r.value,
+        ttl: r.ttl
+      }));
+      renderRules();
+      document.getElementById('editor-modal').classList.add('active');
+    } catch(e) {
+      alert('加载记录失败: ' + e.message);
+    }
+  }
+
+  function closeEditor() {
+    document.getElementById('editor-modal').classList.remove('active');
+    currentDomain = null;
+    rules = [];
+  }
+
+  // 添加新规则（默认 default）
+  function addNewRule() {
+    rules.push({
+      rule_type: 'default',
+      continent: '',
+      isp: '',
+      province: '',
+      type: 'A',
+      value: '',
+      ttl: 600
+    });
+    renderRules();
+  }
+
+  // ----------------------------- 域名管理 ---------------------------------
+  async function loadDomains() {
+    try {
+      const domains = await api('/domains');
+      const container = document.getElementById('domain-list');
+      if (!domains.length) {
+        container.innerHTML = '<div class="empty-state">暂无域名，点击添加</div>';
+        return;
+      }
+      let html = '';
+      for (let d of domains) {
+        html += `
+          <div class="domain-item">
+            <span class="domain-name">${escapeHtml(d.domain)}</span>
+            <div class="action-group">
+              <button class="btn btn-secondary btn-sm edit-domain" data-id="${d.id}" data-domain="${escapeHtml(d.domain)}">编辑记录</button>
+              <button class="btn btn-danger btn-sm delete-domain" data-id="${d.id}">删除</button>
+            </div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+      // 绑定编辑和删除事件（使用事件委托也可以，但直接绑定简单）
+      document.querySelectorAll('.edit-domain').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditor(parseInt(btn.dataset.id), btn.dataset.domain);
+        });
+      });
+      document.querySelectorAll('.delete-domain').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (confirm('确认删除域名及所有记录？')) {
+            await api(`/domains/${btn.dataset.id}`, { method: 'DELETE' });
+            loadDomains();
+          }
+        });
+      });
+    } catch(e) {
+      console.error(e);
+      document.getElementById('domain-list').innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+  }
+
+  async function addDomain() {
+    let domain = prompt('请输入域名 (例如 example.com)');
+    if (!domain) return;
+    domain = domain.trim().toLowerCase();
+    if (!domain) return;
+    try {
+      await api('/domains', { method: 'POST', body: JSON.stringify({ domain }) });
+      loadDomains();
+    } catch(e) {
+      alert('添加失败: ' + e.message);
+    }
+  }
+
+  // ----------------------------- 事件绑定（使用事件委托避免动态元素问题） ---------------------------------
+  function bindDelegatedEvents() {
+    // 规则容器内的事件委托：处理规则类型变更、大洲变更、运营商变更、省份输入、记录类型变更、记录值变更、TTL变更、删除按钮
+    const container = document.getElementById('rules-container');
+    container.addEventListener('change', (e) => {
+      const target = e.target;
+      const row = target.closest('.rule-row');
+      if (!row) return;
+      const idxAttr = row.getAttribute('data-idx');
+      if (idxAttr === null) return;
+      const idx = parseInt(idxAttr);
+      if (target.classList.contains('rule-type')) {
+        // 规则类型改变，需要重新渲染该规则的结构
+        const newType = target.value;
+        rules[idx].rule_type = newType;
+        if (newType !== 'continent') rules[idx].continent = '';
+        if (newType !== 'china') { rules[idx].isp = ''; rules[idx].province = ''; }
+        renderRules(); // 重新渲染会丢失未保存的其他字段？但我们已经先更新了 rules，渲染时会保留
+      } else if (target.classList.contains('continent')) {
+        rules[idx].continent = target.value;
+      } else if (target.classList.contains('china-isp')) {
+        rules[idx].isp = target.value;
+      } else if (target.classList.contains('china-province')) {
+        rules[idx].province = target.value;
+      } else if (target.classList.contains('record-type')) {
+        rules[idx].type = target.value;
+      } else if (target.classList.contains('record-ttl')) {
+        rules[idx].ttl = parseInt(target.value);
+      }
+    });
+    // 记录值输入框使用 input 事件实时同步
+    container.addEventListener('input', (e) => {
+      const target = e.target;
+      if (!target.classList.contains('record-value') && !target.classList.contains('china-province')) return;
+      const row = target.closest('.rule-row');
+      if (!row) return;
+      const idxAttr = row.getAttribute('data-idx');
+      if (idxAttr === null) return;
+      const idx = parseInt(idxAttr);
+      if (target.classList.contains('record-value')) {
+        rules[idx].value = target.value;
+      } else if (target.classList.contains('china-province')) {
+        rules[idx].province = target.value;
+      }
+    });
+    // 删除按钮
+    container.addEventListener('click', (e) => {
+      if (e.target.classList.contains('delete-rule')) {
+        const row = e.target.closest('.rule-row');
+        if (!row) return;
+        const idxAttr = row.getAttribute('data-idx');
+        if (idxAttr === null) return;
+        const idx = parseInt(idxAttr);
+        rules.splice(idx, 1);
+        renderRules();
+      }
+    });
+  }
+
+  // ----------------------------- 初始化 ---------------------------------
+  document.addEventListener('DOMContentLoaded', async () => {
+    // 事件委托绑定（只绑定一次）
+    bindDelegatedEvents();
+
+    // 检查登录状态
+    const token = localStorage.getItem('token');
+    if (!token) {
+      window.location.href = '/static/login.html';
+      return;
+    }
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      document.getElementById('user-info').innerText = `用户 ${payload.uid}`;
+    } catch(e) {
+      window.location.href = '/static/login.html';
+      return;
+    }
+
+    // 加载域名列表
+    await loadDomains();
+
+    // 按钮事件
+    document.getElementById('add-domain-btn').addEventListener('click', addDomain);
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      localStorage.removeItem('token');
+      window.location.href = '/static/login.html';
+    });
+    document.getElementById('rename-domain-btn').addEventListener('click', renameDomain);
+    document.getElementById('save-editor').addEventListener('click', saveRecords);
+    document.getElementById('cancel-editor').addEventListener('click', closeEditor);
+    document.querySelectorAll('.close-modal').forEach(btn => {
+      btn.addEventListener('click', closeEditor);
+    });
+    document.getElementById('editor-modal').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('editor-modal')) closeEditor();
+    });
+    document.getElementById('add-rule-btn').addEventListener('click', addNewRule);
+  });
+</script>
+</body>
+</html>
