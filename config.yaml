@@ -1,7 +1,5 @@
 log:
   level: "error"   # debug, info, warn, error
-dns:
-  listen: ":5353"           # DNS 监听地址，之后可通过 iptables 转发 53
 web:
   listen: ":8080"           # Web 管理界面端口
 db:
@@ -14,3 +12,12 @@ jwt:
   expire_hours: 24
 cache:
   geo_ttl_sec: 600          # IP 地理结果内存缓存时间（秒）
+
+# 新增 DoH 与伪装配置
+doh:
+  domain: "example.com"        # 你管理的域名
+  managed: true                # 是否自动管理证书（Let's Encrypt）
+  listen_http: ":80"           # HTTP 重定向端口（用于自动证书验证）
+  listen_https: ":443"         # HTTPS 服务端口
+  cache_dir: "./certs"         # 证书缓存目录
+  welcome_page: "./welcome.html" # 可自定义欢迎页内容，若不提供则使用内置默认页
