@@ -67,10 +67,10 @@ func (h *Handler) handleDomains(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDomainRecordsGet 获取域名下的所有记录
+// handleDomainRecordsGet 获取域名下的所有记录（包括 generated 字段）
 func (h *Handler) handleDomainRecordsGet(domainID int64, w http.ResponseWriter) {
 	rows, err := h.DB.Query(`
-		SELECT id, rule_type, continent, isp, province, type, value, ttl
+		SELECT id, rule_type, continent, isp, province, type, value, ttl, generated
 		FROM records WHERE domain_id = ?
 	`, domainID)
 	if err != nil {
@@ -81,7 +81,7 @@ func (h *Handler) handleDomainRecordsGet(domainID int64, w http.ResponseWriter) 
 	records := make([]models.Record, 0)
 	for rows.Next() {
 		var rec models.Record
-		err := rows.Scan(&rec.ID, &rec.RuleType, &rec.Continent, &rec.ISP, &rec.Province, &rec.Type, &rec.Value, &rec.TTL)
+		err := rows.Scan(&rec.ID, &rec.RuleType, &rec.Continent, &rec.ISP, &rec.Province, &rec.Type, &rec.Value, &rec.TTL, &rec.Generated)
 		if err != nil {
 			continue
 		}
@@ -90,7 +90,7 @@ func (h *Handler) handleDomainRecordsGet(domainID int64, w http.ResponseWriter) 
 	json.NewEncoder(w).Encode(records)
 }
 
-// handleDomainRecordsPut 替换域名下的所有记录
+// handleDomainRecordsPut 替换域名下的所有记录（支持 ANAME）
 func (h *Handler) handleDomainRecordsPut(domainID int64, w http.ResponseWriter, r *http.Request) {
 	var records []models.Record
 	if err := json.NewDecoder(r.Body).Decode(&records); err != nil {
@@ -110,7 +110,7 @@ func (h *Handler) handleDomainRecordsPut(domainID int64, w http.ResponseWriter, 
 	}
 	allowedTTL := map[int]bool{60: true, 300: true, 600: true, 1200: true, 3600: true}
 	for _, rec := range records {
-		if rec.Type != models.TypeA && rec.Type != models.TypeAAAA && rec.Type != models.TypeCNAME {
+		if rec.Type != models.TypeA && rec.Type != models.TypeAAAA && rec.Type != models.TypeCNAME && rec.Type != models.TypeANAME {
 			http.Error(w, "invalid record type", http.StatusBadRequest)
 			return
 		}
@@ -131,6 +131,11 @@ func (h *Handler) handleDomainRecordsPut(domainID int64, w http.ResponseWriter, 
 			http.Error(w, "invalid rule_type", http.StatusBadRequest)
 			return
 		}
+		// ANAME 类型必须有 value
+		if rec.Type == models.TypeANAME && rec.Value == "" {
+			http.Error(w, "ANAME requires target domain", http.StatusBadRequest)
+			return
+		}
 	}
 	tx, err := h.DB.Begin()
 	if err != nil {
@@ -138,15 +143,17 @@ func (h *Handler) handleDomainRecordsPut(domainID int64, w http.ResponseWriter, 
 		return
 	}
 	defer tx.Rollback()
+	// 删除该域名下所有记录（包括 generated=1 的）
 	_, err = tx.Exec("DELETE FROM records WHERE domain_id = ?", domainID)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	for _, rec := range records {
+		// 前端传过来的 generated 字段应始终为 0，但为了安全我们强制设为 0
 		_, err = tx.Exec(`
-			INSERT INTO records (domain_id, rule_type, continent, isp, province, type, value, ttl)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO records (domain_id, rule_type, continent, isp, province, type, value, ttl, generated)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
 		`, domainID, rec.RuleType, rec.Continent, rec.ISP, rec.Province, rec.Type, rec.Value, rec.TTL)
 		if err != nil {
 			http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
