@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,8 +27,16 @@ type Config struct {
 		GeoTtlSec int `yaml:"geo_ttl_sec"`
 	} `yaml:"cache"`
 	Log struct {
-        Level string `yaml:"level"`
-    } `yaml:"log"`
+		Level string `yaml:"level"`
+	} `yaml:"log"`
+	DoH struct {
+		Domain       string `yaml:"domain"`
+		Managed      bool   `yaml:"managed"`
+		ListenHTTP   string `yaml:"listen_http"`
+		ListenHTTPS  string `yaml:"listen_https"`
+		CacheDir     string `yaml:"cache_dir"`
+		WelcomePage  string `yaml:"welcome_page"`
+	} `yaml:"doh"`
 }
 
 func Load(path string) (*Config, error) {
@@ -49,7 +56,16 @@ func Load(path string) (*Config, error) {
 		cfg.Cache.GeoTtlSec = 300
 	}
 	if cfg.Log.Level == "" {
-    cfg.Log.Level = "error"
-    }
+		cfg.Log.Level = "error"
+	}
+	if cfg.DoH.ListenHTTP == "" {
+		cfg.DoH.ListenHTTP = ":80"
+	}
+	if cfg.DoH.ListenHTTPS == "" {
+		cfg.DoH.ListenHTTPS = ":443"
+	}
+	if cfg.DoH.CacheDir == "" {
+		cfg.DoH.CacheDir = "./certs"
+	}
 	return cfg, nil
 }
