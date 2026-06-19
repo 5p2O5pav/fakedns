@@ -6,7 +6,7 @@ import "time"
 const (
 	TypeA     = "A"
 	TypeAAAA  = "AAAA"
-	TypeCNAME = "CNAME"
+    TypeANAME = "ANAME"
 )
 
 // Rule 规则说明：
@@ -20,6 +20,7 @@ type Rule struct {
 	Continent string // 当 Type="continent" 时使用
 	ISP       string // 当 Type="china" 时使用，可为空（表示通配运营商）
 	Province  string // 当 Type="china" 时使用，可为空（表示通配省份）
+	Generated  int    `json:"generated"` // 0手动, 1自动
 }
 
 // Record 存储DNS记录
