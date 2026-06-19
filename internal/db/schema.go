@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS records (
     type TEXT NOT NULL,
     value TEXT NOT NULL,
     ttl INTEGER NOT NULL DEFAULT 600,
+    generated INTEGER NOT NULL DEFAULT 0,  -- 0: 手动, 1: ANAME 自动生成
     FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 );
 
