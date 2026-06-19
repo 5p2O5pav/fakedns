@@ -1,11 +1,7 @@
 package dns
 
 import (
-	"bytes"
-	"context"
-	"encoding/binary"
-	"errors"
-	"fmt"
+	"database/sql"
 	"io"
 	"net"
 	"net/http"
@@ -19,31 +15,61 @@ import (
 	"dsdns/internal/models"
 )
 
-type DoHServer struct {
-	db       DBQuerier
-	geo      GeoResolver
-	domain   string          // 管理的域名 (如 example.com)
-	stats    *Stats          // 统计
-	anameMgr *ANAMEManager   // ANAME 后台管理
+// DBQuerier 定义查询接口（由 db.Querier 实现）
+type DBQuerier interface {
+	LookupRecords(domain string) ([]*models.Record, error)
 }
 
+// GeoResolver 定义地理信息查询接口
+type GeoResolver interface {
+	GetGeoInfo(ip net.IP) (*geo.GeoInfo, int)
+}
+
+// Stats 统计信息
 type Stats struct {
 	DoHQueries   uint64
 	FakeVisits   uint64
 }
 
-func NewDoHServer(db DBQuerier, geo GeoResolver, domain string) *DoHServer {
+// DoHServer 实现 http.Handler，处理 DoH 和伪装
+type DoHServer struct {
+	db         *sql.DB            // 用于 ANAME 管理
+	querier    DBQuerier
+	geo        GeoResolver
+	domain     string             // FQDN，如 "example.com."
+	stats      *Stats
+	anameMgr   *ANAMEManager
+}
+
+// NewDoHServer 创建 DoH 服务器
+func NewDoHServer(querier DBQuerier, geo GeoResolver, domain string, db *sql.DB) *DoHServer {
 	s := &DoHServer{
-		db:     db,
-		geo:    geo,
-		domain: dns.Fqdn(domain), // 确保以点结尾
-		stats:  &Stats{},
+		db:      db,
+		querier: querier,
+		geo:     geo,
+		domain:  dns.Fqdn(domain),
+		stats:   &Stats{},
 	}
 	s.anameMgr = NewANAMEManager(db)
 	return s
 }
 
-// ServeHTTP 实现 http.Handler，处理所有请求
+// StartANAMEManager 启动 ANAME 后台同步（在 main 中调用）
+func (s *DoHServer) StartANAMEManager(ctx context.Context) {
+	s.anameMgr.Start(ctx)
+}
+
+// StopANAMEManager 停止
+func (s *DoHServer) StopANAMEManager() {
+	s.anameMgr.Stop()
+}
+
+// GetStats 返回统计信息
+func (s *DoHServer) GetStats() (dnsQueries uint64, fakeVisits uint64) {
+	return atomic.LoadUint64(&s.stats.DoHQueries), atomic.LoadUint64(&s.stats.FakeVisits)
+}
+
+// ServeHTTP 处理所有 HTTP 请求
 func (s *DoHServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 统计伪装访问（除 DoH 查询外）
 	if r.URL.Path != "/dns-query" || r.Method != http.MethodPost {
@@ -66,9 +92,8 @@ func (s *DoHServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveWelcome 返回 Nginx 默认欢迎页（可嵌入或读取文件）
+// serveWelcome 返回 Nginx 默认欢迎页
 func (s *DoHServer) serveWelcome(w http.ResponseWriter, r *http.Request) {
-	// 这里直接返回内置的 Nginx 欢迎页 HTML
 	const welcomeHTML = `<!DOCTYPE html>
 <html>
 <head><title>Welcome to nginx!</title></head>
@@ -99,7 +124,6 @@ func (s *DoHServer) serveDoH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 解析 DNS 消息
 	msg := new(dns.Msg)
 	if err := msg.Unpack(body); err != nil {
 		http.Error(w, "bad dns message", http.StatusBadRequest)
@@ -113,14 +137,13 @@ func (s *DoHServer) serveDoH(w http.ResponseWriter, r *http.Request) {
 	q := msg.Question[0]
 	qname := strings.ToLower(q.Name)
 
-	// 仅允许查询配置的域名（或子域名？可根据需要调整）
+	// 仅允许查询配置的域名（含子域名）
 	if !strings.HasSuffix(qname, s.domain) && qname != s.domain {
-		// 未配置的域名，返回 404（伪装）
 		http.NotFound(w, r)
 		return
 	}
 
-	// 获取客户端 IP
+	// 获取客户端 IP（优先 X-Forwarded-For）
 	clientIP := s.extractClientIP(r)
 	var geoInfo *geo.GeoInfo
 	if clientIP != nil {
@@ -129,10 +152,9 @@ func (s *DoHServer) serveDoH(w http.ResponseWriter, r *http.Request) {
 		geoInfo = &geo.GeoInfo{}
 	}
 
-	// 查询数据库中的记录（包括 generated=1 的 ANAME 生成记录）
-	records, err := s.db.LookupRecords(qname)
+	// 查询记录（包括 generated=1 的 ANAME 生成记录）
+	records, err := s.querier.LookupRecords(qname)
 	if err != nil || len(records) == 0 {
-		// 没有记录，返回 NXDOMAIN
 		reply := new(dns.Msg)
 		reply.SetReply(msg)
 		reply.SetRcode(msg, dns.RcodeNameError)
@@ -150,7 +172,6 @@ func (s *DoHServer) serveDoH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 构建响应
 	reply := new(dns.Msg)
 	reply.SetReply(msg)
 	reply.Authoritative = true
@@ -160,7 +181,6 @@ func (s *DoHServer) serveDoH(w http.ResponseWriter, r *http.Request) {
 			reply.Answer = append(reply.Answer, rr)
 		}
 	}
-	// 如果查询类型是 A 或 AAAA，且返回了 CNAME，需要按标准处理？但这里简化，只返回匹配记录
 	s.writeDNSResponse(w, reply)
 
 	// 增加查询统计
@@ -169,11 +189,11 @@ func (s *DoHServer) serveDoH(w http.ResponseWriter, r *http.Request) {
 
 // matchRecords 返回匹配的所有记录（按优先级排序）
 func (s *DoHServer) matchRecords(records []*models.Record, geo *geo.GeoInfo, qtype uint16) []*models.Record {
-	// 先过滤掉 ANAME 类型（ANAME 不直接响应）
+	// 过滤掉 ANAME 类型（ANAME 不直接响应）
 	var filtered []*models.Record
 	for _, rec := range records {
 		if rec.Type == models.TypeANAME {
-			continue // ANAME 由后台生成实际记录
+			continue
 		}
 		filtered = append(filtered, rec)
 	}
@@ -196,8 +216,7 @@ func (s *DoHServer) matchRecords(records []*models.Record, geo *geo.GeoInfo, qty
 	if len(scoredList) == 0 {
 		return nil
 	}
-	// 按分数降序排序
-	// 简单冒泡（实际可 sort.Slice）
+	// 按分数降序排序（简单冒泡）
 	for i := 0; i < len(scoredList); i++ {
 		for j := i + 1; j < len(scoredList); j++ {
 			if scoredList[j].score > scoredList[i].score {
@@ -236,6 +255,52 @@ func (s *DoHServer) matchRecords(records []*models.Record, geo *geo.GeoInfo, qty
 	return final
 }
 
+// matchScore 与原有逻辑一致，但此处我们复制原 server.go 中的 matchScore 函数
+// 为了简洁，直接引用原函数（但原函数在 server.go 中已删除，此处复制）
+func matchScore(rec *models.Record, geo *geo.GeoInfo) int {
+	switch rec.RuleType {
+	case "default":
+		return 1
+	case "continent":
+		if geo.Continent == rec.Continent {
+			return 10
+		}
+		return 0
+	case "china_other":
+		if geo.IsChina && !geo.IsMainland {
+			return 20
+		}
+		if geo.IsChina && geo.IsMainland && (geo.ISP == "" || geo.Province == "") {
+			return 20
+		}
+		return 0
+	case "china":
+		if !geo.IsMainland {
+			return 0
+		}
+		if rec.ISP != "" && rec.ISP != geo.ISP {
+			return 0
+		}
+		if rec.Province != "" {
+			keyword := strings.ToLower(rec.Province)
+			if !strings.Contains(strings.ToLower(geo.Province), keyword) &&
+				!strings.Contains(strings.ToLower(geo.City), keyword) {
+				return 0
+			}
+		}
+		if rec.ISP != "" && rec.Province != "" {
+			return 100
+		} else if rec.ISP != "" {
+			return 90
+		} else if rec.Province != "" {
+			return 80
+		} else {
+			return 70
+		}
+	}
+	return 0
+}
+
 // buildRR 构建单个 RR
 func (s *DoHServer) buildRR(domain string, qtype uint16, rec *models.Record) dns.RR {
 	header := dns.RR_Header{
@@ -261,7 +326,6 @@ func (s *DoHServer) buildRR(domain string, qtype uint16, rec *models.Record) dns
 		}
 	case models.TypeCNAME:
 		if qtype == dns.TypeCNAME || qtype == dns.TypeA || qtype == dns.TypeAAAA {
-			// 标准做法是返回 CNAME，让客户端继续解析
 			return &dns.CNAME{Hdr: header, Target: dns.Fqdn(rec.Value)}
 		}
 	}
@@ -282,7 +346,6 @@ func (s *DoHServer) writeDNSResponse(w http.ResponseWriter, reply *dns.Msg) {
 
 // extractClientIP 从请求中提取客户端 IP（优先 X-Forwarded-For）
 func (s *DoHServer) extractClientIP(r *http.Request) net.IP {
-	// 尝试 X-Forwarded-For
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		ips := strings.Split(xff, ",")
 		if len(ips) > 0 {
@@ -292,7 +355,6 @@ func (s *DoHServer) extractClientIP(r *http.Request) net.IP {
 			}
 		}
 	}
-	// 回退 RemoteAddr
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return nil
